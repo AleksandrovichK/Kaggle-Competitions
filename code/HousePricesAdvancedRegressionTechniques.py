@@ -13,6 +13,7 @@ from xgboost import XGBRegressor
 
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
+
 print("Imports have been set")
 
 # Disabling warnings
@@ -23,7 +24,6 @@ if not sys.warnoptions:
 X = pd.read_csv('../input/house-prices-advanced-regression-techniques/train.csv', index_col='Id')
 # Reading the test data to X_test_full
 X_test_full = pd.read_csv('../input/house-prices-advanced-regression-techniques/test.csv', index_col='Id')
-
 
 # Showing general info
 print("Data:")
@@ -37,7 +37,7 @@ rows_before = X.shape[0]
 X.dropna(axis=0, subset=['SalePrice'], inplace=True)
 # Rows after:
 rows_after = X.shape[0]
-print("Rows containing NaN in SalePrice were dropped: " + str(rows_before - rows_after))
+print("\nRows containing NaN in SalePrice were dropped: " + str(rows_before - rows_after))
 
 # Separating target from predictors
 y = X.SalePrice
@@ -45,7 +45,7 @@ X.drop(['SalePrice'], axis=1, inplace=True)
 
 # Spltting X and y to train and validation sets
 X_train_full, X_valid_full, y_train, y_valid = train_test_split(X, y, train_size=0.8, test_size=0.2, random_state=0)
-print("Shape of X_train: " + str(X_train_full.shape) + ", shape of y_train: " + str(y_train.shape))
+print("\nShape of X_train: " + str(X_train_full.shape) + ", shape of y_train: " + str(y_train.shape))
 print("Shape of X_valid_full: " + str(X_valid_full.shape) + ", shape of y_valid: " + str(y_valid.shape))
 
 # Select categorical columns
@@ -66,12 +66,6 @@ print(nan_count)
 columns_containig_nan = nan_count.index.to_list()
 print("\nWhat values they contain: ")
 print(X_train_full[columns_containig_nan])
-
-numeric_cols_nan = [column for column in numeric_cols if column in columns_containig_nan]
-categorical_cols_nan = [column for column in categorical_columns if column in columns_containig_nan]
-
-print("\nNumeric with nan are " + str(len(numeric_cols_nan)) + "  : " + str(numeric_cols_nan))
-print("Categor with nan are " + str(len(categorical_cols_nan)) + " : " + str(categorical_cols_nan))
 
 # This imputer imputes 0 to numeric values
 imputer_numeric = Pipeline(steps=[
@@ -206,7 +200,7 @@ print("After OH-encoding X_train shape: " + str(X_train.shape) + " and X_valid: 
 #             # Uncomment to print MAE
 #             print("Mean Absolute Error:" , mae_2)
 
-my_model = XGBRegressor(n_estimators=1000, #optimal
+my_model = XGBRegressor(n_estimators=1000,  # optimal
                         early_stopping_rounds=1,
                         learning_rate=0.1,
                         eval_set=[(X_valid, y_valid)],
@@ -217,7 +211,7 @@ preds_test = my_model.predict(X_test)
 mae = mean_absolute_error(my_model.predict(X_valid), y_valid)
 
 # Uncomment to print MAE
-print("Mean Absolute Error:" , mae)
+print("Mean Absolute Error:", mae)
 
 # Save test predictions to file
 output = pd.DataFrame({'Id': X_test.index,

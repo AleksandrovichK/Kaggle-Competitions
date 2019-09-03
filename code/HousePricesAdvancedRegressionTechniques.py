@@ -14,22 +14,22 @@ from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
 
+# TODO
+# 1. Add CV
+# 2. Check whether is this correct to always imput 0. Maybe it takes sense to impute with 'mean' or another.
 print("Imports have been set")
 
 # Disabling warnings
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
 
-# Reading the data to X
+# Reading the training/val data and the test data
 X = pd.read_csv('../input/house-prices-advanced-regression-techniques/train.csv', index_col='Id')
-# Reading the test data to X_test_full
 X_test_full = pd.read_csv('../input/house-prices-advanced-regression-techniques/test.csv', index_col='Id')
 
 # Showing general info
 print("Data:")
 print(X.head())
-# print(X.describe())
-
 
 # Rows before:
 rows_before = X.shape[0]
@@ -49,67 +49,41 @@ print("\nShape of X_train: " + str(X_train_full.shape) + ", shape of y_train: " 
 print("Shape of X_valid_full: " + str(X_valid_full.shape) + ", shape of y_valid: " + str(y_valid.shape))
 
 # Select categorical columns
-categorical_columns = [cname for cname in X_train_full.columns if X_train_full[cname].dtype == "object"]
-print("\nColumns whice are categorical (suitable for OneHot encoding): " + str(len(categorical_columns)) + " out of " + str(X_train_full.shape[1]))
-print(categorical_columns)
+categoric_columns = [cname for cname in X_train_full.columns if X_train_full[cname].dtype == "object"]
+print("\nColumns whice are categoric (suitable for OneHot encoding): " + str(len(categoric_columns)) + " out of " + str(X_train_full.shape[1]))
+print(categoric_columns)
 
 # Select numeric columns
-numeric_cols = [cname for cname in X_train_full.columns if X_train_full[cname].dtype in ['int64', 'float64']]
-print("\nColumns which are numeric (no encoding required): " + str(len(numeric_cols)) + " out of " + str(X_train_full.shape[1]))
-print(numeric_cols)
+numeric_columns = [cname for cname in X_train_full.columns if X_train_full[cname].dtype in ['int64', 'float64']]
+print("\nColumns which are numeric (no encoding required): " + str(len(numeric_columns)) + " out of " + str(X_train_full.shape[1]))
+print(numeric_columns)
 
-nan_count = (X_train_full.isnull().sum())
-nan_count = nan_count[nan_count > 0].sort_values(ascending=False)
+nan_count_table = (X_train_full.isnull().sum())
+nan_count_table = nan_count_table[nan_count_table > 0].sort_values(ascending=False)
 print("\nColums containig NaN: ")
-print(nan_count)
+print(nan_count_table)
 
-columns_containig_nan = nan_count.index.to_list()
+columns_containig_nan = nan_count_table.index.to_list()
 print("\nWhat values they contain: ")
 print(X_train_full[columns_containig_nan])
 
-# This imputer imputes 0 to numeric values
-imputer_numeric = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='constant')),
-])
+# imputing numeric columns (for a while - all numeric to zero)
+for column in numeric_columns:
+    X_train_full[column].fillna(value=0, inplace=True)
+    X_valid_full[column].fillna(value=0, inplace=True)
 
-# This imputer imputs 'missing_value' to categoric values
-imputer_categoric = Pipeline(
-    steps=[('imputer',
-            SimpleImputer(strategy='constant', fill_value='missing_value'))])
+# imputng categoric columns
+imputer = SimpleImputer(strategy='constant', fill_value='missing_value')
+imputed_X_train = pd.DataFrame(imputer.fit_transform(X_train_full), columns=X_train_full.columns).astype(X_train_full.dtypes.to_dict())
+imputed_X_valid = pd.DataFrame(imputer.transform(X_valid_full), columns=X_valid_full.columns).astype(X_valid_full.dtypes.to_dict())
 
-preprocessor = ColumnTransformer(transformers=[('imputer_numeric',
-                                                imputer_numeric,
-                                                numeric_cols),
-                                               ('imputer_categoric',
-                                                imputer_categoric,
-                                                categorical_columns)])
 
-imputed_X_train = pd.DataFrame(preprocessor.fit_transform(X_train_full))
-imputed_X_valid = pd.DataFrame(preprocessor.transform(X_valid_full))
+# Sorting in order to observe results
+sorted_before_imput = X_train_full.sort_values('MSSubClass', ascending=True)
+sorted_after_imput = imputed_X_train.sort_values('MSSubClass', ascending=True)
 
-# Returning columns back
-imputed_X_train.columns = X_train_full.columns
-imputed_X_valid.columns = X_valid_full.columns
+print("Let's check whether shape changed or not. \nBefore imput: " + str(X_train_full.shape) + "\nAfter imput: "+ str(imputed_X_train.shape))
 
-# print("Before Imputing: ")
-# print([elm for elm in X_train_full['YrSold']])
-
-# WELL DONE!!! imputed_X_train now contains repaired from nan X set
-print(X_train_full.shape)
-print(imputed_X_train.shape)
-
-# Removing all categorical columns with nan
-# X_train_without_nan = X_train_full.drop(columns_containig_nan, axis=1)
-# X_valid_without_nan = X_valid_full.drop(columns_containig_nan, axis=1)
-
-# Add imputed
-# X_train = pd.concat([X_train_without_nan, imputed_X_train], axis=1)
-# X_valid = pd.concat([X_valid_without_nan, imputed_X_valid], axis=1)
-
-# X_train.head()
-
-# print("After Imputing: ")
-# print([elm for elm in X_train['YrSold']])
 
 # # Apply label encoder
 # label_encoder = LabelEncoder()

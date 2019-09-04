@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.preprocessing import LabelEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
@@ -17,6 +17,7 @@ from sklearn.model_selection import train_test_split
 # TODO
 # 1. Add CV
 # 2. Check whether is this correct to always imput 0. Maybe it takes sense to impute with 'mean' or another.
+# 3. Check performance with LabelEncoder as well. And then check LabelEncoder and OH together.
 print("Imports have been set")
 
 # Disabling warnings
@@ -71,51 +72,57 @@ print(X_train_full[columns_containig_nan])
 for column in numeric_columns:
     X_train_full[column].fillna(value=0, inplace=True)
     X_valid_full[column].fillna(value=0, inplace=True)
+    X_test_full[column].fillna(value=0, inplace=True)
 
 # imputng categoric columns
 imputer = SimpleImputer(strategy='constant', fill_value='missing_value')
 imputed_X_train = pd.DataFrame(imputer.fit_transform(X_train_full), columns=X_train_full.columns).astype(X_train_full.dtypes.to_dict())
 imputed_X_valid = pd.DataFrame(imputer.transform(X_valid_full), columns=X_valid_full.columns).astype(X_valid_full.dtypes.to_dict())
-
+imputed_X_test = pd.DataFrame(imputer.transform(X_test_full), columns=X_test_full.columns).astype(X_test_full.dtypes.to_dict())
 
 # Sorting in order to observe results
-sorted_before_imput = X_train_full.sort_values('MSSubClass', ascending=True)
-sorted_after_imput = imputed_X_train.sort_values('MSSubClass', ascending=True)
+# sorted_before_imput = X_train_full.sort_values('MSSubClass', ascending=True)
+# sorted_after_imput = imputed_X_train.sort_values('MSSubClass', ascending=True)
 
-print("Let's check whether shape changed or not. \nBefore imput: " + str(X_train_full.shape) + "\nAfter imput: "+ str(imputed_X_train.shape))
+print("\nLet's check whether shape changed or not for X_train. \nBefore imput: " + str(X_train_full.shape) + "\nAfter imput: " + str(imputed_X_train.shape))
+
+nan_count_train_table = (imputed_X_train.isnull().sum())
+nan_count_train_table = nan_count_train_table[nan_count_train_table > 0].sort_values(ascending=False)
+print("\nAre no NaN here now in train: " + str(nan_count_train_table.size == 0))
 
 
+nan_count_test_table = (imputed_X_test.isnull().sum())
+nan_count_test_table = nan_count_test_table[nan_count_test_table > 0].sort_values(ascending=False)
+print("Are no NaN here now in test: " + str(nan_count_test_table.size == 0))
 # # Apply label encoder
 # label_encoder = LabelEncoder()
 # for col in good_label_cols:
 #     label_X_train[col] = label_encoder.fit_transform(X_train[col])
 #     label_X_valid[col] = label_encoder.transform(X_valid[col])
 
-print("Before OH-encoding X_train shape: " + str(X_train_full.shape) + " and X_valid: " + str(X_valid_full.shape))
+print("\nBefore OH-encoding X_train shape: " + str(X_train_full.shape) + " and X_valid: " + str(X_valid_full.shape))
 
 # Apply one-hot encoder to each column with categorical data
+# NOTE: FOR EACH OF THEM
 OH_encoder = OneHotEncoder(handle_unknown='ignore', sparse=False)
-OH_cols_train = pd.DataFrame(OH_encoder.fit_transform(X_train_full[low_cardinality_cols]))
-OH_cols_valid = pd.DataFrame(OH_encoder.transform(X_valid_full[low_cardinality_cols]))
-
-# One-hot encoding removed index; put it back
-OH_cols_train.index = X_train.index
-OH_cols_valid.index = X_valid.index
+OH_cols_train = pd.DataFrame(OH_encoder.fit_transform(imputed_X_train[categoric_columns]), index=X_train_full[categoric_columns].index)
+OH_cols_valid = pd.DataFrame(OH_encoder.transform(imputed_X_valid[categoric_columns]), index=X_valid_full[categoric_columns].index)
+OH_cols_test = pd.DataFrame(OH_encoder.transform(imputed_X_test[categoric_columns]), index=X_test_full[categoric_columns].index)
 
 # Remove categorical columns (will replace with one-hot encoding)
-# Removing all low_cardinality_cols columns
-num_X_train = X_train.drop(low_cardinality_cols, axis=1)
-num_X_valid = X_valid.drop(low_cardinality_cols, axis=1)
+# Removing all categoric columns
+numeric_X_train = X_train_full.drop(categoric_columns, axis=1)
+numeric_X_valid = X_valid_full.drop(categoric_columns, axis=1)
+numeric_X_test = X_test_full.drop(categoric_columns, axis=1)
 
 # Add one-hot encoded columns to numerical features
-X_train = pd.concat([num_X_train, OH_cols_train], axis=1)
-X_valid = pd.concat([num_X_valid, OH_cols_valid], axis=1)
+X_train = pd.concat([numeric_X_train, OH_cols_train], axis=1)
+X_valid = pd.concat([numeric_X_valid, OH_cols_valid], axis=1)
+X_test = pd.concat([numeric_X_test, OH_cols_test], axis=1)
 
-print("After OH-encoding X_train shape: " + str(X_train.shape) + " and X_valid: " + str(X_valid.shape))
-
-#
-# **3 COLUMNS ARE NOT USED** !!!
-#
+print("After OH-encoding X_train shape: " + str(X_train.shape))
+print(", X_valid: " + str(X_valid.shape))
+print(", X_test: " + str(X_test.shape))
 
 # Keep selected columns only WHY? HOW ABOUT OTHERS?
 # my_cols = low_cardinality_cols + numeric_cols
@@ -174,12 +181,17 @@ print("After OH-encoding X_train shape: " + str(X_train.shape) + " and X_valid: 
 #             # Uncomment to print MAE
 #             print("Mean Absolute Error:" , mae_2)
 
-my_model = XGBRegressor(n_estimators=1000,  # optimal
-                        early_stopping_rounds=1,
-                        learning_rate=0.1,
-                        eval_set=[(X_valid, y_valid)],
-                        verbose=False)
-my_model.fit(X_train.append(X_valid), y_train.append(y_valid))
+my_model = Pipeline([
+    ('scale', StandardScaler()),
+    ('reg', XGBRegressor(objective='reg:squarederror',
+                         n_estimators=1000,
+                         early_stopping_rounds=1,
+                         learning_rate=0.1,
+                         eval_set=[(X_valid, y_valid)],
+                         verbose=False))
+])
+
+my_model.fit(X_train, y_train)
 preds_test = my_model.predict(X_test)
 
 mae = mean_absolute_error(my_model.predict(X_valid), y_valid)
@@ -188,7 +200,7 @@ mae = mean_absolute_error(my_model.predict(X_valid), y_valid)
 print("Mean Absolute Error:", mae)
 
 # Save test predictions to file
-output = pd.DataFrame({'Id': X_test.index,
-                       'SalePrice': preds_test})
-output.to_csv('submission.csv', index=False)
-print("Submission file is formed")
+# output = pd.DataFrame({'Id': X_test.index,
+#                        'SalePrice': preds_test})
+# output.to_csv('submission.csv', index=False)
+# print("Submission file is formed")

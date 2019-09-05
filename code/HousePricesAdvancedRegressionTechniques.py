@@ -5,26 +5,17 @@ import pandas as pd
 import numpy as np
 
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.linear_model import RidgeCV, LassoCV, ElasticNetCV
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, RobustScaler
 from sklearn.preprocessing import LabelEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import Pipeline, make_pipeline
 from scipy.stats import skew
 from xgboost import XGBRegressor
 
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score, KFold
 
-
-#   DISCLAIMER
-# Guys, everything that you see in the kernel you can freely take, copy, modify and create your own, amazing solutions!
-# Do not forget upvote if the kernel was useful for you. Anyway tt will be further developed.
-
-# TODO
-# 3. Check performance with LabelEncoder as well. And then check LabelEncoder and OH together.
-# 4. Add Lasso, Ridge and some other estimators, test them together and compile them into the ensemble with coefficients
-# 5. log1p haven't improved results, investigate why
-# 6. Create new features or steal them somewhere
 print("Imports have been set")
 
 # Disabling warnings
@@ -135,11 +126,10 @@ features['Alley'] = features['Alley'].fillna('Pave')
 # Stored as string so converted to int.
 features['MasVnrArea'] = features['MasVnrArea'].astype(np.int64)
 
-
 # ==============================
 #      ADDING NEW FEATURES
 # ==============================
-features['YrBltAndRemod'] = features['YearBuilt']+features['YearRemodAdd']
+features['YrBltAndRemod'] = features['YearBuilt'] + features['YearRemodAdd']
 features['TotalSF'] = features['TotalBsmtSF'] + features['1stFlrSF'] + features['2ndFlrSF']
 
 features['Total_sqr_footage'] = (features['BsmtFinSF1'] + features['BsmtFinSF2'] +
@@ -170,12 +160,15 @@ print("\nAre no NaN here now: " + str(nan_count_train_table.size == 0))
 numeric_columns = [cname for cname in features.columns if features[cname].dtype in ['int64', 'float64']]
 print("\nColumns which are numeric: " + str(len(numeric_columns)) + " out of " + str(features.shape[1]))
 print(numeric_columns)
+categoric_columns = [cname for cname in features.columns if features[cname].dtype == "object"]
+print("\nColumns whice are categoric: " + str(len(categoric_columns)) + " out of " + str(features.shape[1]))
+print(categoric_columns)
 
 skewness = features[numeric_columns].apply(lambda x: skew(x))
 print(skewness.sort_values(ascending=False))
 
 skewness = skewness[abs(skewness) > 0.5]
-skew_features = np.log1p(features[skewness.index])
+features[skewness.index] = np.log1p(features[skewness.index])
 print("\nSkewed values: " + str(skewness.index))
 
 # Kind of One-Hot encoding
@@ -191,50 +184,81 @@ print('X', X.shape, 'y', y.shape, 'X_test', X_test.shape)
 #                      ML part
 # ==============================================
 
+# check maybe 10 kfolds would be better
+kfolds = KFold(n_splits=5, shuffle=True, random_state=42)
+
+
+# model scoring and validation function
+def cv_rmse(the_model, x):
+    return np.sqrt(-cross_val_score(the_model, x, y, scoring="neg_mean_squared_error", cv=kfolds))
+
+
+# rmsle scoring function
+def rmsle(y_actual, y_pred):
+    return np.sqrt(mean_squared_error(y_actual, y_pred))
+
+
+# setup models hyperparameters using a pipline
+# The purpose of the pipeline is to assemble several steps that can be cross-validated together, while setting different parameters.
+# This is a range of values that the model considers each time in runs a CV
+e_alphas = [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007]
+e_l1ratio = [0.8, 0.85, 0.9, 0.95, 0.99, 1]
+alphas_alt = [14.5, 14.6, 14.7, 14.8, 14.9, 15, 15.1, 15.2, 15.3, 15.4, 15.5]
+alphas2 = [5e-05, 0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007, 0.0008]
+
+# Kernel Ridge Regression : made robust to outliers
+ridge = make_pipeline(RobustScaler(), RidgeCV(alphas=alphas_alt, cv=kfolds))
+
+# LASSO Regression : made robust to outliers
+lasso = make_pipeline(RobustScaler(), LassoCV(max_iter=1e7, alphas=alphas2, random_state=14, cv=kfolds))
+
+# Elastic Net Regression : made robust to outliers
+elasticnet = make_pipeline(RobustScaler(), ElasticNetCV(max_iter=1e7, alphas=e_alphas, cv=kfolds, l1_ratio=e_l1ratio))
+
 # optimal parameters, received from CV
 c_grid = {"n_estimators": [1000],
           "early_stopping_rounds": [1],
           "learning_rate": [0.1]}
 xgb_regressor = XGBRegressor(objective='reg:squarederror')
 cross_validation = KFold(n_splits=5, shuffle=True, random_state=2)
+xgb_r = GridSearchCV(estimator=xgb_regressor,
+                     param_grid=c_grid,
+                     cv=cross_validation)
 
-my_model = GridSearchCV(estimator=xgb_regressor,
-                        param_grid=c_grid,
-                        cv=cross_validation)
-my_model.fit(X, y)
+# Fit the training data X, y
+print('\n\nFitting our models ensemble')
+print('Elasticnet is fitting now...')
+elastic_model = elasticnet.fit(X, y)
+print('Lasso is fitting now...')
+lasso_model = lasso.fit(X, y)
+print('Ridge is fitting now...')
+ridge_model = ridge.fit(X, y)
+print('XGB is fitting now...')
+xgb_model = xgb_r.fit(X, y)
 
-# Save test predictions to file
-# output = pd.DataFrame({'Id': X_test.index,
-#                        'SalePrice': preds_test})
-# submission.iloc[:,1] = np.expm1(blend_models(X_test))
-# output.to_csv('submission.csv', index=False)
-# print("Submission file is formed")
+# get the performance of each model on training data(validation set)
+print('\n\nModels evaluating: ')
+score = cv_rmse(ridge_model, X)
+print("Ridge score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+
+score = cv_rmse(lasso_model, X)
+print("Lasso score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+
+score = cv_rmse(elastic_model, X)
+print("ElasticNet score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+
+score = cv_rmse(xgb_model, X)
+print("xgb_r score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
 
 
-# FOR NEXT EDIT:
+# TODO make weghted sum
+def blend_models(x):
+    return ((elastic_model.predict(x)) + (lasso_model.predict(x)) + (ridge_model.predict(x)) + xgb_r.predict(x)) / 4
 
-# # Kernel Ridge Regression : made robust to outliers
-# ridge = make_pipeline(RobustScaler(), RidgeCV(alphas=alphas_alt, cv=kfolds))
-#
-# # LASSO Regression : made robust to outliers
-# lasso = make_pipeline(RobustScaler(), LassoCV(max_iter=1e7,
-#                                               alphas=alphas2,random_state=42, cv=kfolds))
-#
-# # Elastic Net Regression : made robust to outliers
-# elasticnet = make_pipeline(RobustScaler(), ElasticNetCV(max_iter=1e7,
-#                                                         alphas=e_alphas, cv=kfolds, l1_ratio=e_l1ratio))
-#
-# # store models, scores and prediction values
-# models = {'Ridge': ridge,
-#           'Lasso': lasso,
-#           'ElasticNet': elasticnet}
-# predictions = {}
-# scores = {}
-#
-# for name, model in models.items():
-#
-#     model.fit(X, y)
-#     predictions[name] = np.expm1(model.predict(X))
-#
-#     score = cv_rmse(model, X=X)
-#     scores[name] = (score.mean(), score.std())
+
+print('\nRMSLE score on train data:')
+print(rmsle(y, blend_models(X)))
+
+# submission = pd.read_csv("../input/house-prices-advanced-regression-techniques/sample_submission.csv")
+# submission.iloc[:, 1] = np.expm1(blend_models(X_test))
+# submission.to_csv("submission.csv", index=False)

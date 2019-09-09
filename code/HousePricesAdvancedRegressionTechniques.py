@@ -1,26 +1,37 @@
+# ================================================================
+# Imports
+# ================================================================
 import sys
 import warnings
 
-import pandas as pd
+import lightgbm as lgb
 import numpy as np
-
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import RidgeCV, LassoCV, ElasticNetCV
-from sklearn.preprocessing import OneHotEncoder, StandardScaler, RobustScaler
-from sklearn.preprocessing import LabelEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline, make_pipeline
+import pandas as pd
+from mlxtend.regressor import StackingCVRegressor
 from scipy.stats import skew
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.linear_model import ElasticNetCV
+from sklearn.linear_model import LassoCV
+from sklearn.linear_model import RidgeCV
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import KFold
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import RobustScaler
+from sklearn.svm import SVR
 from xgboost import XGBRegressor
+from scipy.special import boxcox1p
+from scipy.stats import boxcox
 
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score, KFold
 
 print("Imports have been set")
 
 # Disabling warnings
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
+
+# ================================================================
+#  Input data handling
+# ================================================================
 
 # Reading the training/val data and the test data
 X = pd.read_csv('../input/house-prices-advanced-regression-techniques/train.csv', index_col='Id')
@@ -42,6 +53,10 @@ train_features = X.drop(['SalePrice'], axis=1)
 features = pd.concat([train_features, X_test]).reset_index(drop=True)
 print('\nFeatures size:', features.shape)
 
+# ================================================================
+#  Checking for NaNs and printing them
+# ================================================================
+
 nan_count_table = (features.isnull().sum())
 nan_count_table = nan_count_table[nan_count_table > 0].sort_values(ascending=False)
 print("\nColums containig NaN: ")
@@ -51,10 +66,10 @@ columns_containig_nan = nan_count_table.index.to_list()
 print("\nWhat values they contain: ")
 print(features[columns_containig_nan])
 
-# ==============================================
-# FEATURE ENGINEERING
-# Let's perform feature engineering for each column checking what it is and filling gaps / nans
-# ==============================================
+# ================================================================
+#  Feature engineering
+# ================================================================
+
 for column in columns_containig_nan:
 
     # populating with 0
@@ -126,9 +141,9 @@ features['Alley'] = features['Alley'].fillna('Pave')
 # Stored as string so converted to int.
 features['MasVnrArea'] = features['MasVnrArea'].astype(np.int64)
 
-# ==============================
-#      ADDING NEW FEATURES
-# ==============================
+# ================================================================
+#  Adding new features
+# ================================================================
 features['YrBltAndRemod'] = features['YearBuilt'] + features['YearRemodAdd']
 features['TotalSF'] = features['TotalBsmtSF'] + features['1stFlrSF'] + features['2ndFlrSF']
 
@@ -151,15 +166,20 @@ features['hasfireplace'] = features['Fireplaces'].apply(lambda x: 1 if x > 0 els
 
 print('Features size:', features.shape)
 
+# ================================================================
+#  Let's check if we filled all the gaps
+# ================================================================
 nan_count_train_table = (features.isnull().sum())
 nan_count_train_table = nan_count_train_table[nan_count_train_table > 0].sort_values(ascending=False)
 print("\nAre no NaN here now: " + str(nan_count_train_table.size == 0))
-# ============================================
-#       FIXING SKEWED VALUES
-# ============================================
+
+# ================================================================
+#  Fixing skewed values
+# ================================================================
 numeric_columns = [cname for cname in features.columns if features[cname].dtype in ['int64', 'float64']]
 print("\nColumns which are numeric: " + str(len(numeric_columns)) + " out of " + str(features.shape[1]))
 print(numeric_columns)
+
 categoric_columns = [cname for cname in features.columns if features[cname].dtype == "object"]
 print("\nColumns whice are categoric: " + str(len(categoric_columns)) + " out of " + str(features.shape[1]))
 print(categoric_columns)
@@ -167,11 +187,17 @@ print(categoric_columns)
 skewness = features[numeric_columns].apply(lambda x: skew(x))
 print(skewness.sort_values(ascending=False))
 
-skewness = skewness[abs(skewness) > 0.5]
-features[skewness.index] = np.log1p(features[skewness.index])
+skewness = skewness[abs(skewness) > 0.85]
+# features[skewness.index] = np.log1p(features[skewness.index])
 print("\nSkewed values: " + str(skewness.index))
 
-# Kind of One-Hot encoding
+# BoxCox Transform
+for column in skewness.index:
+    features[column] = boxcox1p(features[column], 0.15)
+
+# ================================================================
+#  Categoric features encoding and splitting to train and test data
+# ================================================================
 final_features = pd.get_dummies(features).reset_index(drop=True)
 
 # Spliting the data back to train(X,y) and test(X_sub)
@@ -180,31 +206,19 @@ X_test = final_features.iloc[len(X):, :]
 print('Features size for train(X,y) and test(X_test):')
 print('X', X.shape, 'y', y.shape, 'X_test', X_test.shape)
 
-# ==============================================
-#                      ML part
-# ==============================================
-
-# check maybe 10 kfolds would be better
-kfolds = KFold(n_splits=5, shuffle=True, random_state=42)
-
-
-# model scoring and validation function
-def cv_rmse(the_model, x):
-    return np.sqrt(-cross_val_score(the_model, x, y, scoring="neg_mean_squared_error", cv=kfolds))
-
-
-# rmsle scoring function
-def rmsle(y_actual, y_pred):
-    return np.sqrt(mean_squared_error(y_actual, y_pred))
-
-
-# setup models hyperparameters using a pipline
+# ================================================================
+#  ML part (models initialization)
+# ================================================================
 # The purpose of the pipeline is to assemble several steps that can be cross-validated together, while setting different parameters.
-# This is a range of values that the model considers each time in runs a CV
+# This is a range of values that the model considers each time in runs a CV setup
+
 e_alphas = [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007]
 e_l1ratio = [0.8, 0.85, 0.9, 0.95, 0.99, 1]
 alphas_alt = [14.5, 14.6, 14.7, 14.8, 14.9, 15, 15.1, 15.2, 15.3, 15.4, 15.5]
 alphas2 = [5e-05, 0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007, 0.0008]
+
+# check maybe 10 kfolds would be better
+kfolds = KFold(n_splits=10, shuffle=True, random_state=42)
 
 # Kernel Ridge Regression : made robust to outliers
 ridge = make_pipeline(RobustScaler(), RidgeCV(alphas=alphas_alt, cv=kfolds))
@@ -215,18 +229,37 @@ lasso = make_pipeline(RobustScaler(), LassoCV(max_iter=1e7, alphas=alphas2, rand
 # Elastic Net Regression : made robust to outliers
 elasticnet = make_pipeline(RobustScaler(), ElasticNetCV(max_iter=1e7, alphas=e_alphas, cv=kfolds, l1_ratio=e_l1ratio))
 
-# optimal parameters, received from CV
-c_grid = {"n_estimators": [1000],
-          "early_stopping_rounds": [1],
-          "learning_rate": [0.1]}
-xgb_regressor = XGBRegressor(objective='reg:squarederror')
-cross_validation = KFold(n_splits=5, shuffle=True, random_state=2)
-xgb_r = GridSearchCV(estimator=xgb_regressor,
-                     param_grid=c_grid,
-                     cv=cross_validation)
+# Gradient Boosting for regression
+gboost = GradientBoostingRegressor(n_estimators=3000, learning_rate=0.05,
+                                   max_depth=4, max_features='sqrt',
+                                   min_samples_leaf=15, min_samples_split=10,
+                                   loss='huber', random_state=5)
 
-# Fit the training data X, y
-print('\n\nFitting our models ensemble')
+# LightGBM regressor.
+lgbm = lgb.LGBMRegressor(objective='regression', num_leaves=4,
+                         learning_rate=0.01, n_estimators=5000,
+                         max_bin=200, bagging_fraction=0.75,
+                         bagging_freq=5, feature_fraction=0.2,
+                         feature_fraction_seed=7, bagging_seed=7, verbose=-1)
+
+xgb_r = XGBRegressor(learning_rate=0.01, n_estimators=3460,
+                     max_depth=3, min_child_weight=0,
+                     gamma=0, subsample=0.7,
+                     colsample_bytree=0.7,
+                     objective='reg:squarederror', nthread=-1,
+                     scale_pos_weight=1, seed=27,
+                     reg_alpha=0.00006)
+
+stack_gen = StackingCVRegressor(regressors=(ridge, lasso, elasticnet, gboost, xgb_r, lgbm),
+                                meta_regressor=xgb_r,
+                                use_features_in_secondary=True)
+
+svr = make_pipeline(RobustScaler(), SVR(C=20, epsilon=0.008, gamma=0.0003))
+
+# ================================================================
+#  ML part (models fitting)
+# ================================================================
+print('\n\nFitting our models ensemble: ')
 print('Elasticnet is fitting now...')
 elastic_model = elasticnet.fit(X, y)
 print('Lasso is fitting now...')
@@ -235,30 +268,110 @@ print('Ridge is fitting now...')
 ridge_model = ridge.fit(X, y)
 print('XGB is fitting now...')
 xgb_model = xgb_r.fit(X, y)
-
-# get the performance of each model on training data(validation set)
-print('\n\nModels evaluating: ')
-score = cv_rmse(ridge_model, X)
-print("Ridge score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
-
-score = cv_rmse(lasso_model, X)
-print("Lasso score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
-
-score = cv_rmse(elastic_model, X)
-print("ElasticNet score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
-
-score = cv_rmse(xgb_model, X)
-print("xgb_r score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+print('Gradient Boosting regressor is fitting now...')
+gboost_model = gboost.fit(X, y)
+print('LGBMRegressor is fitting now...')
+lgbm_model = lgbm.fit(X, y)
+print('stack_gen is fitting now...')
+stack_gen_model = stack_gen.fit(X, y)
+print('SVR is fitting now...')
+svr_model = svr.fit(X, y)
 
 
-# TODO make weghted sum
+# model scoring and validation function
+# def cv_rmse(the_model, x):
+#     return np.sqrt(-cross_val_score(the_model, x, y, scoring="neg_mean_squared_error", cv=kfolds))
+
+
+# print('\n\nModels evaluating: ')
+# score = cv_rmse(ridge_model, X)
+# print("Ridge score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+#
+# score = cv_rmse(lasso_model, X)
+# print("Lasso score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+#
+# score = cv_rmse(elastic_model, X)
+# print("ElasticNet score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+#
+# score = cv_rmse(xgb_model, X)
+# print("xgb_r score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+#
+# score = cv_rmse(gboost_model, X)
+# print("Gradient boosting score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+#
+# score = cv_rmse(lgbm_model, X)
+# print("LGB score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+#
+# score = cv_rmse(stack_gen_model, X)
+# print("Stack gen score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+#
+# score = cv_rmse(svr_model, X)
+# print("SVR score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+
+
+# ================================================================
+#  ML part (models ensembling)
+# ================================================================
+
+
+# def blend_models(x):
+#     return (0.30 * stack_gen_model.predict(x) +  # 0.1236 (0.0232)
+#             0.20 * gboost_model.predict(x) +  # 0.1249 (0.0208)
+#             0.15 * elastic_model.predict(x) +  # 0.1266 (0.0221)
+#             0.15 * lasso_model.predict(x) +  # 0.1267 (0.0221)
+#             0.10 * lgbm_model.predict(x) +  # 0.1272 (0.0198)
+#             0.05 * svr_model.predict(x) +  # 0.1273 (0.0247)
+#             #  0.03 * xgb_r.predict(x) +     # 0.1283 (0.0168)
+#             0.05 * ridge_model.predict(x))  # 0.1301 (0.0216)
+
 def blend_models(x):
-    return ((elastic_model.predict(x)) + (lasso_model.predict(x)) + (ridge_model.predict(x)) + xgb_r.predict(x)) / 4
+    return ((0.1 * elastic_model.predict(x)) +
+            (0.1 * lasso_model.predict(x)) +
+            (0.05 * ridge_model.predict(x)) +
+            (0.1 * svr_model.predict(x)) +
+            (0.1 * gboost_model.predict(x)) +
+            (0.15 * xgb_model.predict(x)) +
+            (0.1 * lgbm_model.predict(x)) +
+            (0.3 * stack_gen_model.predict(np.array(x))))
+
+
+def rmsle(y_actual, y_pred):
+    return np.sqrt(mean_squared_error(y_actual, y_pred))
 
 
 print('\nRMSLE score on train data:')
 print(rmsle(y, blend_models(X)))
 
-# submission = pd.read_csv("../input/house-prices-advanced-regression-techniques/sample_submission.csv")
-# submission.iloc[:, 1] = np.expm1(blend_models(X_test))
-# submission.to_csv("submission.csv", index=False)
+# best_coefs = []
+# best_rmsle = 10
+
+# for coef_1 in np.arange(0.0, 0.6, 0.2):
+#     print("coef_1")
+#     for coef_2 in np.arange(0.0, 0.6, 0.2):
+#         print("coef_2")
+#         for coef_3 in np.arange(0.0, 0.6, 0.2):
+#             print("coef_3")
+#             for coef_4 in np.arange(0.0, 0.6, 0.2):
+#                 print("coef_4")
+#                 for coef_5 in np.arange(0.0, 0.6, 0.2):
+#                     print("coef_5")
+#                     for coef_6 in np.arange(0.0, 0.6, 0.2):
+#                         print("coef_6")
+#                         for coef_7 in np.arange(0.0, 0.6, 0.2):
+#                             for coef_8 in np.arange(0.0, 0.6, 0.2):
+#                                 val = rmsle(y, (coef_8 * stack_gen_model.predict(X) + coef_7 * gboost_model.predict(X) + coef_6 * elastic_model.predict(X) + coef_5 * lasso_model.predict(X) + coef_4 * lgbm_model.predict(X) + coef_3 * svr_model.predict(X) + coef_2 * xgb_r.predict(X) + coef_1 * ridge_model.predict(X)))
+#                                 if val < best_rmsle:
+#                                     best_rmsle = val
+#                                     best_coefs = [coef_8, coef_7, coef_6,  coef_5,  coef_4,  coef_3,  coef_2, coef_1]
+#                                     print(best_coefs)
+#                                     print("RMSLE: " + str(best_rmsle))
+
+# ================================================================
+#  Results sumbission
+# ================================================================
+
+submission = pd.read_csv("../input/house-prices-advanced-regression-techniques/sample_submission.csv")
+submission.iloc[:, 1] = np.expm1(blend_models(X_test))
+submission.to_csv("submission.csv", index=False)
+
+print("Submission file is formed")
